@@ -1,0 +1,25 @@
+Dưới đây là các bước tuần tự của thuật toán LandTrendr, sắp xếp theo thứ tự logic từ khi bắt đầu đến khi kết thúc:
+
+Bước 1: Đọc Dữ Liệu
+Nhập chuỗi thời gian từ nguồn dữ liệu.
+Xử lý các dữ liệu bị thiếu hoặc không hợp lệ.
+Bước 2: Hồi Quy Phân Đoạn (Segment Fitting)
+Sử dụng hồi quy tuyến tính phân đoạn để chia chuỗi thời gian thành các đoạn tuyến tính.
+Áp dụng maxSegments (tối đa 6 đoạn) để giới hạn số đoạn cần phân tích.
+Bước 3: Làm Mịn Chuỗi Thời Gian (Smoothing)
+Làm mịn chuỗi dữ liệu để giảm nhiễu và bất thường ngắn hạn.
+Bước 4: Phát Hiện và Loại Bỏ Đột Biến (Spike Detection)
+Xác định và loại bỏ các đột biến vượt qua spikeThreshold (0.9).
+Bước 5: Chọn Điểm Đỉnh (Vertex Selection)
+Chọn các điểm đỉnh nơi xu hướng thay đổi, sử dụng phép hồi quy phân đoạn với overshooting (vertexCountOvershoot).
+Bước 6: Ngăn Chặn Phục Hồi Một Năm (Prevent One-Year Recovery)
+Loại bỏ các sự phục hồi ngắn hạn diễn ra trong một năm.
+Bước 7: Phát Hiện Phục Hồi (Recovery Detection)
+Phát hiện các sự phục hồi với ngưỡng recoveryThreshold (0.25).
+Bước 8: Phân Tích Ý Nghĩa Thống Kê (Statistical Significance)
+Đảm bảo các đoạn và điểm đỉnh có ý nghĩa thống kê (với ngưỡng pvalThreshold: 0.05).
+Bước 9: Chọn Mô Hình Tốt Nhất (Best Model Selection)
+Chọn mô hình hồi quy phân đoạn tốt nhất, đảm bảo giải thích ít nhất 75% dữ liệu (bestModelProportion: 0.75).
+Bước 10: Hoàn Tất Hồi Quy Phân Đoạn (Finalize Segmentation)
+Xác nhận số đoạn và vị trí các điểm đỉnh cuối cùng, đảm bảo số đoạn không vượt quá giới hạn và mô hình phù hợp với chuỗi dữ liệu.
+Thứ tự này giúp quy trình trở nên hợp lý và dễ hiểu hơn khi bạn bắt đầu viết lại thuật toán. Bạn có thể tiến hành lập trình từng bước từ dữ liệu đầu vào đến việc phân đoạn chuỗi thời gian.

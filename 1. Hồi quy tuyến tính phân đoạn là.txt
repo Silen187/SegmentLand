@@ -1,0 +1,37 @@
+1. Hồi quy tuyến tính phân đoạn là gì?
+Hồi quy tuyến tính phân đoạn là một phương pháp chia chuỗi thời gian thành nhiều đoạn tuyến tính. Mỗi đoạn là một phần của chuỗi thời gian mà xu hướng có thể được mô tả bằng một hàm tuyến tính 
+𝑦
+=
+𝑎
+𝑥
++
+𝑏
+y=ax+b (với 
+𝑎
+a là độ dốc, và 
+𝑏
+b là giá trị giao cắt trục y).
+
+Trong trường hợp của LandTrendr, việc hồi quy tuyến tính phân đoạn là quá trình tìm kiếm các điểm breakpoints - tức là những điểm mà tại đó chuỗi thời gian thay đổi xu hướng (ví dụ từ giảm sang tăng hoặc ngược lại).
+
+Ví dụ, nếu chúng ta có chuỗi dữ liệu 20 năm về một chỉ số (ví dụ NBR hoặc NDVI), LandTrendr sẽ cố gắng tìm những điểm đứt gãy (breakpoints) để phân chia dữ liệu thành nhiều đoạn tuyến tính. Các đoạn này có thể đại diện cho các giai đoạn suy thoái, phục hồi, hoặc ổn định.
+
+2. Quy trình hồi quy phân đoạn chi tiết
+Bước 1: Chia dữ liệu thành các đoạn
+Giả sử bạn có 20 giá trị chỉ số từ năm 2000 đến 2020. Mục tiêu là tìm các điểm mà xu hướng thay đổi rõ rệt. LandTrendr sẽ thử nhiều cách chia dữ liệu khác nhau, ví dụ:
+
+Từ 2000 đến 2005: Một đoạn xu hướng (đoạn 1)
+Từ 2005 đến 2010: Đoạn xu hướng thứ hai (đoạn 2)
+Từ 2010 đến 2020: Đoạn xu hướng thứ ba (đoạn 3)
+Hồi quy tuyến tính sẽ được áp dụng cho từng đoạn nhỏ này để xác định xu hướng trong đoạn (tức là độ dốc 
+𝑎
+a).
+
+Bước 2: Tìm các điểm breakpoints
+Breakpoints là các năm mà sự thay đổi về xu hướng là lớn nhất. Thuật toán sẽ thử nhiều cách chia khác nhau và chọn mô hình có breakpoints tối ưu nhất. Trong ví dụ 20 năm, có thể có nhiều điểm breakpoints như: năm 2005 và 2010, nơi xu hướng của chỉ số thay đổi từ ổn định sang giảm, hoặc từ giảm sang tăng.
+
+Bước 3: Áp dụng hồi quy tuyến tính
+Với mỗi đoạn giữa các breakpoints, LandTrendr sẽ áp dụng hồi quy tuyến tính đơn giản để ước tính xu hướng (độ dốc và giao cắt). Nếu chuỗi thời gian có sự phục hồi hoặc suy thoái rõ ràng, hồi quy tuyến tính sẽ phát hiện được xu hướng này.
+
+Bước 4: Chọn mô hình tốt nhất
+LandTrendr sẽ thử nhiều mô hình khác nhau, với số lượng breakpoints khác nhau, và chọn mô hình có p-value tốt nhất (dựa trên tiêu chí như pvalThreshold).

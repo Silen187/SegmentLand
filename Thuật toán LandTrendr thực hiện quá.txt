@@ -1,0 +1,33 @@
+Thuật toán LandTrendr thực hiện quá trình "fit dữ liệu" trên chuỗi thời gian để tìm ra các thay đổi quan trọng, chẳng hạn như mất hoặc phục hồi thảm thực vật. Mục tiêu là khớp dữ liệu chuỗi thời gian (thường là các chỉ số phổ học như NDVI, NBR) vào một số đoạn thẳng đơn giản để mô hình hóa các sự kiện thay đổi theo thời gian.
+
+Dưới đây là cách thuật toán "fit" dữ liệu trên LandTrendr:
+
+Các bước của thuật toán LandTrendr:
+Tạo chuỗi thời gian:
+
+Đầu tiên, thuật toán thu thập một chuỗi thời gian của các giá trị phổ học từ dữ liệu Landsat, ví dụ như chỉ số NBR (Normalized Burn Ratio). Dữ liệu được tổ chức theo từng năm và mỗi điểm ảnh có một chuỗi giá trị qua các năm.
+Tìm các điểm gãy (vertices):
+
+Vertices là các điểm mà tại đó có sự thay đổi đáng kể trong chuỗi thời gian. Thuật toán tìm các điểm gãy này bằng cách xác định sự thay đổi đột ngột của dữ liệu, chẳng hạn như sau một sự kiện mất thảm thực vật (cháy rừng) hoặc phục hồi (trồng lại rừng).
+Thuật toán này sẽ cố gắng khớp chuỗi thời gian với các đoạn thẳng nối liền các điểm gãy này. Mỗi đoạn thẳng đại diện cho một giai đoạn tương đối ổn định (không có sự thay đổi lớn).
+Phân đoạn chuỗi thời gian (segmentation):
+
+Sau khi tìm được các điểm gãy, thuật toán chia chuỗi thời gian thành các đoạn. Mỗi đoạn thể hiện một giai đoạn tương đối ổn định giữa hai sự kiện thay đổi lớn.
+Các đoạn này có thể là sự ổn định (không thay đổi) hoặc có sự thay đổi dần dần (ví dụ như mất dần thảm thực vật do hạn hán kéo dài).
+Khớp dữ liệu (fitting):
+
+Sau khi chia chuỗi thời gian thành các đoạn, thuật toán sử dụng phương pháp khớp đường thẳng (linear fitting) để mô hình hóa chuỗi dữ liệu giữa các điểm gãy.
+Các đoạn thẳng được lựa chọn sao cho giảm thiểu độ lệch giữa chuỗi dữ liệu thực tế và mô hình đoạn thẳng. Đây là quá trình tối thiểu hóa sai số giữa dữ liệu thực và mô hình.
+Tính toán độ lệch và RMSE:
+
+Sau khi khớp dữ liệu vào các đoạn thẳng, thuật toán tính toán RMSE (Root Mean Square Error) cho mỗi đoạn để đánh giá độ chính xác của việc khớp mô hình.
+RMSE đo lường sự sai lệch giữa dữ liệu thực tế và dự đoán từ đoạn thẳng. RMSE càng nhỏ, việc khớp mô hình càng chính xác.
+Phân tích sự kiện thay đổi:
+
+Dựa trên các đoạn thẳng và điểm gãy, thuật toán có thể xác định các sự kiện thay đổi lớn như mất rừng (nếu giá trị phổ học giảm nhanh) hoặc phục hồi thảm thực vật (nếu giá trị tăng lên).
+Các thông tin như năm xảy ra thay đổi, độ lớn của thay đổi, thời gian thay đổi, và tốc độ thay đổi đều được trích xuất từ các đoạn này.
+Kết quả của thuật toán:
+Sau khi hoàn tất quá trình "fit" dữ liệu, thuật toán LandTrendr sẽ tạo ra một ảnh bao gồm các band đại diện cho các thuộc tính của các sự kiện thay đổi (như năm xảy ra, độ lớn thay đổi, tốc độ, thời gian,...). Dữ liệu này có thể được dùng để phân tích các sự kiện mất hoặc phục hồi thảm thực vật trong một khu vực.
+
+Tóm tắt:
+Thuật toán LandTrendr giúp khớp dữ liệu chuỗi thời gian vào các đoạn đơn giản để phát hiện các thay đổi lớn trong thảm thực vật. Nó sử dụng quá trình tìm điểm gãy, khớp đường thẳng, và đánh giá bằng RMSE để xác định các sự kiện thay đổi quan trọng trên bề mặt đất.

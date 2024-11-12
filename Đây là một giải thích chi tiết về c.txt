@@ -1,0 +1,37 @@
+Đây là một giải thích chi tiết về các tham số của hàm LandTrendr trong Google Earth Engine (LT-GEE). Mỗi tham số điều chỉnh cách phân đoạn phổ-thời gian (spectral-temporal segmentation) được thực hiện, giúp bạn tinh chỉnh quá trình phân tích để phù hợp với môi trường và yêu cầu cụ thể.
+
+1. maxSegments (Integer)
+Ý nghĩa: Đây là số lượng phân đoạn tối đa sẽ được lắp vào chuỗi thời gian. Phân đoạn trong LandTrendr là quá trình xác định các thay đổi chính trong dữ liệu qua thời gian.
+Mặc định: Không có mặc định cụ thể.
+Giải thích: Giá trị này giới hạn số lượng phân đoạn mà mô hình có thể tạo ra. Số lượng phân đoạn càng nhiều thì mô hình càng có thể phát hiện ra nhiều biến động nhỏ, nhưng nếu số lượng phân đoạn quá nhiều, mô hình có thể trở nên quá phức tạp và kém chính xác.
+2. spikeThreshold (Float)
+Ý nghĩa: Ngưỡng cho việc làm giảm tác động của các đỉnh (spikes) đột ngột trong chuỗi thời gian.
+Mặc định: 0.9
+Giải thích: Giá trị này xác định mức độ ảnh hưởng của các biến động ngắn hạn (spikes). Nếu giá trị là 1.0, không có sự giảm tác động nào (không làm mịn). Giá trị càng nhỏ, mức độ giảm tác động của các spikes càng cao. Điều này giúp loại bỏ những biến động ngắn hạn có thể không phản ánh chính xác xu hướng dài hạn.
+3. vertexCountOvershoot (Integer)
+Ý nghĩa: Số lượng đỉnh (vertices) ban đầu có thể vượt quá số phân đoạn tối đa cộng với 1.
+Mặc định: 3
+Giải thích: Khi bắt đầu mô hình, LandTrendr có thể tạo ra số đỉnh nhiều hơn số lượng phân đoạn tối đa để tìm ra mô hình phù hợp nhất. Sau đó, các đỉnh này sẽ bị cắt giảm xuống để phù hợp với số phân đoạn tối đa.
+4. preventOneYearRecovery (Boolean)
+Ý nghĩa: Ngăn chặn các phân đoạn phục hồi trong vòng một năm.
+Mặc định: false
+Giải thích: Nếu tham số này được đặt thành true, LandTrendr sẽ ngăn chặn các phân đoạn mà sự phục hồi chỉ xảy ra trong vòng một năm. Điều này hữu ích để loại bỏ các chu kỳ biến động ngắn hạn có thể không phản ánh xu hướng dài hạn thực sự.
+5. recoveryThreshold (Float)
+Ý nghĩa: Ngưỡng cho tốc độ phục hồi của phân đoạn.
+Mặc định: 0.25
+Giải thích: Nếu một phân đoạn có tốc độ phục hồi nhanh hơn 1/recoveryThreshold (tính theo năm), phân đoạn đó sẽ bị loại bỏ. Ví dụ, với recoveryThreshold = 0.25, tốc độ phục hồi tối đa sẽ là 4 năm (1/0.25 = 4). Nếu phân đoạn phục hồi quá nhanh, nó có thể bị coi là không hợp lệ và bị loại bỏ.
+6. pvalThreshold (Float)
+Ý nghĩa: Ngưỡng p-value cho mô hình lắp khớp.
+Mặc định: 0.1
+Giải thích: Nếu giá trị p-value của mô hình vượt quá giá trị ngưỡng này, mô hình hiện tại sẽ bị loại bỏ, và một mô hình khác sẽ được lắp khớp bằng cách sử dụng thuật toán tối ưu hóa Levenberg-Marquardt. Điều này giúp đảm bảo rằng mô hình không chỉ vừa với dữ liệu mà còn có ý nghĩa thống kê.
+7. bestModelProportion (Float)
+Ý nghĩa: Tỷ lệ cho phép của mô hình có nhiều đỉnh nhất nhưng vẫn có p-value thấp hơn hoặc bằng một tỷ lệ so với mô hình có p-value thấp nhất.
+Mặc định: 1.25
+Giải thích: LandTrendr sẽ chọn mô hình với số lượng đỉnh lớn nhất nhưng có p-value không lớn hơn bestModelProportion lần so với mô hình có p-value thấp nhất. Điều này cho phép mô hình có nhiều đỉnh hơn, miễn là nó không vượt quá giới hạn về ý nghĩa thống kê.
+8. minObservationsNeeded (Integer)
+Ý nghĩa: Số lượng quan sát tối thiểu cần thiết để thực hiện lắp khớp đầu ra.
+Mặc định: 6
+Giải thích: LandTrendr yêu cầu một số lượng quan sát tối thiểu để thực hiện phân đoạn. Nếu dữ liệu có quá ít quan sát, việc lắp mô hình phân đoạn có thể không đủ độ tin cậy.
+9. timeSeries (ImageCollection)
+Ý nghĩa: Bộ sưu tập hình ảnh để trích xuất xu hướng (mỗi ảnh trong bộ sưu tập đại diện cho một năm). Băng đầu tiên được sử dụng để tìm các điểm đột phá, và các băng còn lại sẽ được lắp khớp bằng cách sử dụng các điểm đột phá này.
+Giải thích: Đây là đầu vào chính của LandTrendr, bao gồm các hình ảnh mà mỗi ảnh đại diện cho một năm, chẳng hạn như chỉ số NBR hoặc NDVI. LandTrendr sử dụng những hình ảnh này để phát hiện và phân tích các thay đổi theo thời gian.
