@@ -15,13 +15,12 @@ class ChangeDetection:
         Khởi tạo lớp ChangeDetection với đầu vào từ người dùng.
         """
         self.data = None
-
+        self.all_data = None
         # Nhập các tham số từ người dùng, với giá trị mặc định
         self.n_segments = int(input("Nhập số đoạn phân đoạn tối đa (mặc định là 4): ") or 4)
         self.spike_threshold = float(input("Nhập ngưỡng phát hiện nhiễu (mặc định là 0.9): ") or 0.9)
         self.vertex_count_overshoot = int(input("Nhập số điểm gãy khúc tăng thêm cho bộ lọc (mặc định là 2): ") or 2)
         self.recovery_threshold = float(input("Nhập ngưỡng phục hồi gới hạn trên (mặc định là 0.25): ") or 0.25)
-        self.dsnr = input("Chuẩn hóa theo RMSE (true/false, mặc định là false): ").strip().lower() == "true"
         self.preventOneYearRecovery = input("Ngăn chặn phục hồi ngắn hạn trong 1 năm ? (true/false, mặc định là false): ").strip().lower() == "true"
         self.minObservation = int(input("Nhập số phần tử cần thiết tối thiểu của chuỗi (mặc định là 6): ") or 6)
 
@@ -65,26 +64,30 @@ class ChangeDetection:
             i += 1
         return lst
 
-    def import_data(self, file_path, drop_columns=None):
+    def import_data(self, file_path):
 
         # Đọc tệp CSV vào DataFrame
-        data = pd.read_csv(file_path)
-        
-        # Loại bỏ các giá trị bị thiếu
-        data = data.dropna()
+        data = pd.read_csv(file_path)  
+        years = [int(col.split('_')[1]) for col in data.columns if col.startswith("Year_")]
+        pixel_ids = data['pixel_id']
 
-        # Loại bỏ các cột không cần thiết
-        if drop_columns:
-            data = data.drop(columns=drop_columns, errors='ignore')
-        data.reset_index(drop=True, inplace=True)     
+        ds = xr.Dataset(
+            {
+                "NBR": (["pixel_id", "year"], data.drop(columns="pixel_id").values)
+            },
+            coords={
+                "pixel_id": pixel_ids,
+                "time": years
+            }
+        )
 
-        return data
+        self.all_data = ds
 
     def smooth_spikes(self):
         """
         Làm mịn dữ liệu để loại bỏ nhiễu bằng cách lấy trung bình của các điểm liền kề khi phát hiện nhiễu.
         """
-        nbr_values = self.data['NBR'].values
+        nbr_values = self.data
         smoothed_values = nbr_values.copy()
         for i in range(1, len(nbr_values) - 1):
             if nbr_values[i] != 0:
@@ -182,7 +185,7 @@ class ChangeDetection:
             del self.breakpoints[max_variance_idx]
             # Tăng biến đếm lần lặp
             iteration += 1
-        self.slopes = (self.pwlf_model).slopes
+        self.slopes = self.pwlf_model.slopes
 
     def detect_and_remove_short_term_recovery(self):
         """
@@ -232,9 +235,15 @@ class ChangeDetection:
         # Giữ lại điểm cuối cùng
         filtered_breakpoints.append(self.breakpoints[-1])
         
-        self.breakpoints = filtered_breakpoints 
+        self.breakpoints = filtered_breakpoints
+    
+    def final_model(self):
+        time_numeric = np.arange(len(self.smoothed_data))
+        my_pwlf = pwlf.PiecewiseLinFit(time_numeric, self.smoothed_data)
+        my_pwlf.fit_with_breaks(self.breakpoints)
+        self.pwlf_model = my_pwlf
 
-    def plot_result(self):
+    def plot_result(self, pixel_id):
         """
         Vẽ đồ thị kết quả cuối cùng với các breakpoints đã lọc.
         """
@@ -242,53 +251,55 @@ class ChangeDetection:
         plt.figure(figsize=(12, 6))
         plt.plot(time_numeric, self.smoothed_data, 'o', label='Smoothed Data')
         plt.plot(time_numeric, self.data, 'v', label='Origin Data')
-        
-        my_pwlf = pwlf.PiecewiseLinFit(time_numeric, self.smoothed_data)
-        my_pwlf.fit_with_breaks(self.breakpoints)
                 
         for i in range(1, len(self.breakpoints)):
             x_segment = np.linspace(self.breakpoints[i-1], self.breakpoints[i], num=100)
-            y_segment = my_pwlf.predict(x_segment)
+            y_segment = self.pwlf_model.predict(x_segment)
             plt.plot(x_segment, y_segment, '-', color='red')
         
         for bp in self.breakpoints:
             plt.axvline(x=bp, linestyle='--', color='green', label=f'Breakpoint at {bp:.2f}')
         
-        plt.title('Final Piecewise Linear Regression with Filtered Breakpoints')
+        plt.title(f"Final Piecewise Linear Regression with Filtered Breakpoints For Pixel {pixel_id}")
         plt.xlabel('Time')
         plt.ylabel('NBR')
         plt.legend()
         plt.grid(True)
-        plt.show()
+        plt.savefig(f"pixel_{pixel_id}.png")
+        plt.close()  # Đóng biểu đồ để giải phóng bộ nhớ
 
+    
     def run(self):
         """
         Chạy toàn bộ quy trình phân tích.
         """
-        print("Nhập dữ liệu, resize dữ liệu.")
-        self.data = self.import_data('Pixel_TimeSeries_Export.csv', 'date')
-        print("Bắt đầu làm mịn dữ liệu...")
-        self.smooth_spikes()
-        
-        print("Phân đoạn dữ liệu với overshoot...")
-        self.segment_with_overshoot()
-        
-        print("Lọc các điểm breakpoints...")
-        self.filter_breakpoints_dynamic(self.breakpoints, self.slopes, self.smoothed_data_normalized)
-        self.remove_breakpoint_with_max_variance(np.arange(len(self.smoothed_data_normalized)), self.smoothed_data_normalized, self.n_segments)
-        self.detect_and_remove_short_term_recovery()
-        self.detect_and_remove_small_recoveries()
-        
-        print("Vẽ kết quả cuối cùng...")
-        # self.plot_result()
-        # print("Quá trình hoàn tất.")
+
+        for pixel_id in self.all_data.pixel_id:
+            # Lấy giá trị thời gian và NBR cho từng pixel
+            self.data = self.all_data.NBR.sel(pixel_id=pixel_id).values  # Các giá trị NBR cho pixel hiện tại
+            if self.data is not None and len(self.data) < self.minObservation:
+                raise ValueError(f"Dữ liệu không đủ số lượng quan sát tối thiểu: yêu cầu {self.minObservation}, nhưng chỉ có {len(self.data)}.")
+            
+            self.smooth_spikes()
+            
+            self.segment_with_overshoot()
+            
+            self.filter_breakpoints_dynamic(self.breakpoints, self.slopes, self.smoothed_data_normalized)
+            self.remove_breakpoint_with_max_variance(np.arange(len(self.smoothed_data_normalized)), self.smoothed_data_normalized, self.n_segments)
+            if self.preventOneYearRecovery == True:
+                self.detect_and_remove_short_term_recovery()
+            self.detect_and_remove_small_recoveries()
+            
+            self.final_model()
+
+            self.plot_result(pixel_id.item())
+
 
 detector = ChangeDetection()
-
-# Bắt đầu đo thời gian
+detector.import_data('pivot_data.csv')
 start_time = time.time()
 
-# Gọi phương thức run()
+# Chạy hàm detector.run()
 detector.run()
 
 # Kết thúc đo thời gian
@@ -296,4 +307,4 @@ end_time = time.time()
 
 # Tính toán thời gian chạy
 execution_time = end_time - start_time
-print(f"Thời gian chạy của phương thức run(): {execution_time:.4f} giây")
+print(f"Thời gian chạy của detector.run(): {execution_time:.4f} giây")
