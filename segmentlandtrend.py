@@ -127,10 +127,14 @@ class ChangeDetection:
         
         return result, nbr_threshold
     
-    def filter_breakpoints_dynamic(self, breakpoints, slopes, nbr_values, nbr_percentile=25):
+    def filter_breakpoints_dynamic(self, breakpoints, slopes, nbr_values):
         """
         Lọc các điểm phân đoạn dựa trên ngưỡng động.
         """
+        nbr_percentile = max(20, 70 - 10 * self.n_segments * (np.std(nbr_values) / (0.5*(len(nbr_values)-1))))
+        
+        nbr_percentile = min(nbr_percentile, 60)
+
         slope_threshold_result, nbr_threshold = self.dynamic_thresholds(slopes, nbr_values, nbr_percentile)
         
         filtered_breakpoints = [breakpoints[0]]  # Giữ lại điểm đầu tiên
