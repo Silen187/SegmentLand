@@ -6,11 +6,10 @@ import matplotlib.pyplot as plt
 import math
 import pandas as pd
 import xarray as xr
+from openpyxl import load_workbook
 from dask import delayed
 from dask import compute
 from dask.distributed import Client
-import webbrowser
-import time
 
 
 
@@ -19,11 +18,10 @@ np.random.seed(42)
 
 class ChangeDetection:
 
-    def __init__(self, pixel_id, params, data):
+    def __init__(self, params, data, min_year):
         """
         Khởi tạo lớp ChangeDetection với đầu vào từ người dùng.
         """
-        self.data = data
         # Nhập các tham số từ người dùng, với giá trị mặc định
         self.n_segments = params["n_segments"]
         self.spike_threshold = params["spike_threshold"]
@@ -32,6 +30,8 @@ class ChangeDetection:
         self.preventOneYearRecovery = params["preventOneYearRecovery"]
         self.minObservation = params["minObservation"]
 
+        self.data = data
+        self.min_year = min_year
         self.smoothed_data = None
         self.smoothed_data_normalized = None
         self.breakpoints = None
@@ -46,6 +46,16 @@ class ChangeDetection:
         cos_theta = abs((1 + m1 * m2) / (math.sqrt(1 + m1**2) * math.sqrt(1 + m2**2)))
         return math.degrees(math.acos(cos_theta))
 
+
+    def calculate_rmse(self):
+        """
+        Tính RMSE (Root Mean Square Error) của mô hình LandTrendr.
+        """
+        y_true = self.smoothed_data
+        y_pred = self.pwlf_model.predict(np.arange(len(y_true)))
+        rmse = np.sqrt(np.mean((y_true - y_pred) ** 2))
+        return rmse
+    
     @staticmethod
     def calculate_variance(y_true, y_pred):
         """
@@ -262,37 +272,77 @@ class ChangeDetection:
         plt.savefig(f"pixel_{pixel_id}.png")
         plt.close()  # Đóng biểu đồ để giải phóng bộ nhớ
 
-    # def run(self):
-    #     """
-    #     Chạy toàn bộ quy trình phân tích.
-    #     """
 
-    #     for pixel_id in self.all_data.pixel_id:
-    #         # Lấy giá trị thời gian và NBR cho từng pixel
-    #         self.data = self.all_data.NBR.sel(pixel_id=pixel_id).values  # Các giá trị NBR cho pixel hiện tại
-    #         if self.data is not None and len(self.data) < self.minObservation:
-    #             raise ValueError(f"Dữ liệu không đủ số lượng quan sát tối thiểu: yêu cầu {self.minObservation}, nhưng chỉ có {len(self.data)}.")
-            
-    #         self.smooth_spikes()
-            
-    #         self.segment_with_overshoot()
-            
-    #         self.filter_breakpoints_dynamic(self.breakpoints, self.slopes, self.smoothed_data_normalized)
-    #         self.remove_breakpoint_with_max_variance(np.arange(len(self.smoothed_data_normalized)), self.smoothed_data_normalized, self.n_segments)
-    #         if self.preventOneYearRecovery == True:
-    #             self.detect_and_remove_short_term_recovery()
-    #         self.detect_and_remove_small_recoveries()
-            
-    #         self.final_model()
+    def get_segment_data(self, pixel_id, delta='all', filename="all_pixels_segments.xlsx"):
+        """
+        Tạo mảng thông tin về các phân đoạn dựa trên các điểm breakpoint, giữ nguyên hướng delta.
+        
+        Parameters:
+        - delta (String): 'all', 'loss', hoặc 'gain' để chọn loại phân đoạn.
+        
+        Returns:
+        - Một mảng 2D với 11 hàng, mỗi cột đại diện cho một phân đoạn.
+        """
+        segments_info = []
 
-    #         self.plot_result(pixel_id.item())
+        for i in range(len(self.breakpoints) - 1):
+            start = self.breakpoints[i]
+            end = self.breakpoints[i + 1]
+            start_value_predict = self.pwlf_model.predict([start])[0]
+            end_value_predict = self.pwlf_model.predict([end])[0]
+            delta_value_predict = end_value_predict - start_value_predict
+            start_value = self.smoothed_data[self.breakpoints[i]]
+            end_value = self.smoothed_data[self.breakpoints[i+1]]
+            duration = end - start
+            rate_of_change_predict = delta_value_predict / duration 
+            
+            # Lọc các phân đoạn dựa trên loại delta ('all', 'loss', 'gain')
+            if (delta == 'all') or (delta == 'loss' and delta_value_predict < 0) or (delta == 'gain' and delta_value_predict > 0):
+                segments_info.append([
+                    start + self.min_year,               # Hàng 1: Năm bắt đầu
+                    end + self.min_year,                 # Hàng 2: Năm kết thúc
+                    start_value_predict,         # Hàng 3: Giá trị bắt đầu
+                    end_value_predict,           # Hàng 4: Giá trị kết thúc
+                    delta_value_predict,        #Giá trị thay đổi quang phổ dự đoán
+                    start_value,            #Giá trị làm trơn thực bắt đầu
+                    end_value,              #Giá trị làm trơn kết thúc
+                    duration,            # Hàng 6: Thời lượng thay đổi
+                    rate_of_change_predict,     # Hàng 7: Tốc độ thay đổi quang phổ dự đoán
+                    delta_value_predict / self.calculate_rmse()  # Hàng 8: DSNR (chuẩn hóa theo RMSE)
+                ])
+
+        columns = [
+            'Năm Bắt Đầu', 'Năm Kết Thúc', 'Giá Trị Dự Đoán Bắt Đầu', 'Giá Trị Dự Đoán Kết Thúc', 'Sự Thay Đổi Quang Phổ Dự Đoán',
+            'Giá Trị Thực Bắt Đầu', 'Giá Trị Thực Kết Thúc',
+            'Thời Lượng', 'Tốc Độ Thay Đổi Dự Đoán', 'DSNR'
+        ]
+
+        df = pd.DataFrame(segments_info, columns=columns).T
+
+        start_row = pixel_id * 11  # Mỗi pixel chiếm 11 hàng và cách nhau 1 hàng
+        
+        try:
+            with pd.ExcelWriter(filename, engine='openpyxl', mode='a', if_sheet_exists='overlay') as writer:
+                # Ghi nhãn pixel_id tại hàng bắt đầu
+                sheet = writer.book['Sheet1']
+                sheet.cell(row=start_row + 1, column=1, value=f"Pixel ID: {pixel_id}")
+                
+                # Ghi dữ liệu của DataFrame từ hàng tiếp theo
+                df.to_excel(writer, sheet_name="Sheet1", startrow=start_row, startcol=1, index=True, header=False)
+        
+        except FileNotFoundError:
+            # Nếu file chưa tồn tại, tạo file mới
+            with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+                # Ghi nhãn pixel_id và dữ liệu vào file Excel
+                sheet = writer.sheets.get("Sheet1", writer.book.create_sheet("Sheet1"))
+                sheet.cell(row=start_row + 1, column=1, value=f"Pixel ID: {pixel_id}")
+                df.to_excel(writer, sheet_name="Sheet1", startrow=start_row, startcol=1, index=True, header=False)
 
 
 @delayed
-def process_pixel_dask(pixel_id, params, data):
-    print(f"Processing pixel ID: {pixel_id}")
+def process_pixel_dask(pixel_id, params, data, min_year):
     # Khởi tạo một đối tượng ChangeDetection mới cho mỗi pixel
-    detector = ChangeDetection(pixel_id, params, data)
+    detector = ChangeDetection(params, data, min_year)
     # Kiểm tra nếu dữ liệu không đủ số lượng quan sát
     if detector.data is not None and len(detector.data) < detector.minObservation:
         raise ValueError(f"Dữ liệu không đủ số lượng quan sát tối thiểu: yêu cầu {detector.minObservation}, nhưng chỉ có {len(detector.data)}.")
@@ -307,21 +357,23 @@ def process_pixel_dask(pixel_id, params, data):
     
     detector.detect_and_remove_small_recoveries()
     detector.final_model()
+    detector.get_segment_data(pixel_id)
     detector.plot_result(pixel_id)
 
-def run_parallel_with_client(params, all_data):
+
+def run_parallel_with_client(params, all_data, min_year):
     # Khởi tạo Dask Client
-    client = Client(n_workers=8, threads_per_worker=1, memory_limit='2GB')
-    webbrowser.open(client.dashboard_link)  # Mở Dashboard trong trình duyệt mặc định
+    client = Client(n_workers=8, threads_per_worker=2, memory_limit='2GB')
 
     # Tạo danh sách các tác vụ delayed cho tất cả các pixel
-    tasks = [process_pixel_dask(pixel_id.item(), params, all_data.NBR.sel(pixel_id=pixel_id).values) for pixel_id in all_data.pixel_id]
+    tasks = [process_pixel_dask(pixel_id.item(), params, all_data.NBR.sel(pixel_id=pixel_id).values, min_year) for pixel_id in all_data.pixel_id]
     print(len(tasks))
     
     # Chạy song song và theo dõi tiến trình
     compute(*tasks)  # Dask sẽ tự động phân phối công việc cho các lõi CPU
 
     client.close()  # Đóng client khi xong
+    print("Thành công!")
 
 def import_data(file_path):
 
@@ -340,7 +392,7 @@ def import_data(file_path):
         }
     )
 
-    return ds
+    return ds, min(years)
 
 params = {
     "n_segments": 6,
@@ -352,8 +404,5 @@ params = {
 }
 
 if __name__ == '__main__':
-    all_data = import_data('pivot_data.csv')
-    s = time.time()
-    run_parallel_with_client(params, all_data)
-    e = time.time()
-    print("thoigian ", e-s)
+    all_data, min_year = import_data('pivot_data.csv')
+    run_parallel_with_client(params, all_data, min_year)
