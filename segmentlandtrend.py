@@ -1,28 +1,36 @@
 import numpy as np
 import pwlf
+import matplotlib
+matplotlib.use('Agg') 
 import matplotlib.pyplot as plt
 import math
 import pandas as pd
 import xarray as xr
+from dask import delayed
+from dask import compute
+from dask.distributed import Client
+import webbrowser
 import time
+
+
+
 
 np.random.seed(42)
 
 class ChangeDetection:
 
-    def __init__(self):
+    def __init__(self, pixel_id, params, data):
         """
         Khởi tạo lớp ChangeDetection với đầu vào từ người dùng.
         """
-        self.data = None
-        self.all_data = None
+        self.data = data
         # Nhập các tham số từ người dùng, với giá trị mặc định
-        self.n_segments = int(input("Nhập số đoạn phân đoạn tối đa (mặc định là 4): ") or 4)
-        self.spike_threshold = float(input("Nhập ngưỡng phát hiện nhiễu (mặc định là 0.9): ") or 0.9)
-        self.vertex_count_overshoot = int(input("Nhập số điểm gãy khúc tăng thêm cho bộ lọc (mặc định là 2): ") or 2)
-        self.recovery_threshold = float(input("Nhập ngưỡng phục hồi gới hạn trên (mặc định là 0.25): ") or 0.25)
-        self.preventOneYearRecovery = input("Ngăn chặn phục hồi ngắn hạn trong 1 năm ? (true/false, mặc định là false): ").strip().lower() == "true"
-        self.minObservation = int(input("Nhập số phần tử cần thiết tối thiểu của chuỗi (mặc định là 6): ") or 6)
+        self.n_segments = params["n_segments"]
+        self.spike_threshold = params["spike_threshold"]
+        self.vertex_count_overshoot = params["vertex_count_overshoot"]
+        self.recovery_threshold = params["recovery_threshold"]
+        self.preventOneYearRecovery = params["preventOneYearRecovery"]
+        self.minObservation = params["minObservation"]
 
         self.smoothed_data = None
         self.smoothed_data_normalized = None
@@ -64,24 +72,6 @@ class ChangeDetection:
             i += 1
         return lst
 
-    def import_data(self, file_path):
-
-        # Đọc tệp CSV vào DataFrame
-        data = pd.read_csv(file_path)  
-        years = [int(col.split('_')[1]) for col in data.columns if col.startswith("Year_")]
-        pixel_ids = data['pixel_id']
-
-        ds = xr.Dataset(
-            {
-                "NBR": (["pixel_id", "year"], data.drop(columns="pixel_id").values)
-            },
-            coords={
-                "pixel_id": pixel_ids,
-                "time": years
-            }
-        )
-
-        self.all_data = ds
 
     def smooth_spikes(self):
         """
@@ -272,43 +262,98 @@ class ChangeDetection:
         plt.savefig(f"pixel_{pixel_id}.png")
         plt.close()  # Đóng biểu đồ để giải phóng bộ nhớ
 
+    # def run(self):
+    #     """
+    #     Chạy toàn bộ quy trình phân tích.
+    #     """
+
+    #     for pixel_id in self.all_data.pixel_id:
+    #         # Lấy giá trị thời gian và NBR cho từng pixel
+    #         self.data = self.all_data.NBR.sel(pixel_id=pixel_id).values  # Các giá trị NBR cho pixel hiện tại
+    #         if self.data is not None and len(self.data) < self.minObservation:
+    #             raise ValueError(f"Dữ liệu không đủ số lượng quan sát tối thiểu: yêu cầu {self.minObservation}, nhưng chỉ có {len(self.data)}.")
+            
+    #         self.smooth_spikes()
+            
+    #         self.segment_with_overshoot()
+            
+    #         self.filter_breakpoints_dynamic(self.breakpoints, self.slopes, self.smoothed_data_normalized)
+    #         self.remove_breakpoint_with_max_variance(np.arange(len(self.smoothed_data_normalized)), self.smoothed_data_normalized, self.n_segments)
+    #         if self.preventOneYearRecovery == True:
+    #             self.detect_and_remove_short_term_recovery()
+    #         self.detect_and_remove_small_recoveries()
+            
+    #         self.final_model()
+
+    #         self.plot_result(pixel_id.item())
+
+
+@delayed
+def process_pixel_dask(pixel_id, params, data):
+    print(f"Processing pixel ID: {pixel_id}")
+    # Khởi tạo một đối tượng ChangeDetection mới cho mỗi pixel
+    detector = ChangeDetection(pixel_id, params, data)
+    # Kiểm tra nếu dữ liệu không đủ số lượng quan sát
+    if detector.data is not None and len(detector.data) < detector.minObservation:
+        raise ValueError(f"Dữ liệu không đủ số lượng quan sát tối thiểu: yêu cầu {detector.minObservation}, nhưng chỉ có {len(detector.data)}.")
+    # Tiến hành các bước phân tích
+    detector.smooth_spikes()
+    detector.segment_with_overshoot()
+    detector.filter_breakpoints_dynamic(detector.breakpoints, detector.slopes, detector.smoothed_data_normalized)
+    detector.remove_breakpoint_with_max_variance(np.arange(len(detector.smoothed_data_normalized)), detector.smoothed_data_normalized, detector.n_segments)
     
-    def run(self):
-        """
-        Chạy toàn bộ quy trình phân tích.
-        """
+    if detector.preventOneYearRecovery:
+        detector.detect_and_remove_short_term_recovery()
+    
+    detector.detect_and_remove_small_recoveries()
+    detector.final_model()
+    detector.plot_result(pixel_id)
 
-        for pixel_id in self.all_data.pixel_id:
-            # Lấy giá trị thời gian và NBR cho từng pixel
-            self.data = self.all_data.NBR.sel(pixel_id=pixel_id).values  # Các giá trị NBR cho pixel hiện tại
-            if self.data is not None and len(self.data) < self.minObservation:
-                raise ValueError(f"Dữ liệu không đủ số lượng quan sát tối thiểu: yêu cầu {self.minObservation}, nhưng chỉ có {len(self.data)}.")
-            
-            self.smooth_spikes()
-            
-            self.segment_with_overshoot()
-            
-            self.filter_breakpoints_dynamic(self.breakpoints, self.slopes, self.smoothed_data_normalized)
-            self.remove_breakpoint_with_max_variance(np.arange(len(self.smoothed_data_normalized)), self.smoothed_data_normalized, self.n_segments)
-            if self.preventOneYearRecovery == True:
-                self.detect_and_remove_short_term_recovery()
-            self.detect_and_remove_small_recoveries()
-            
-            self.final_model()
+def run_parallel_with_client(params, all_data):
+    # Khởi tạo Dask Client
+    client = Client(n_workers=8, threads_per_worker=1, memory_limit='2GB')
+    webbrowser.open(client.dashboard_link)  # Mở Dashboard trong trình duyệt mặc định
 
-            self.plot_result(pixel_id.item())
+    # Tạo danh sách các tác vụ delayed cho tất cả các pixel
+    tasks = [process_pixel_dask(pixel_id.item(), params, all_data.NBR.sel(pixel_id=pixel_id).values) for pixel_id in all_data.pixel_id]
+    print(len(tasks))
+    
+    # Chạy song song và theo dõi tiến trình
+    compute(*tasks)  # Dask sẽ tự động phân phối công việc cho các lõi CPU
 
+    client.close()  # Đóng client khi xong
 
-detector = ChangeDetection()
-detector.import_data('pivot_data.csv')
-start_time = time.time()
+def import_data(file_path):
 
-# Chạy hàm detector.run()
-detector.run()
+    # Đọc tệp CSV vào DataFrame
+    data = pd.read_csv(file_path)  
+    years = [int(col.split('_')[1]) for col in data.columns if col.startswith("Year_")]
+    pixel_ids = data['pixel_id']
 
-# Kết thúc đo thời gian
-end_time = time.time()
+    ds = xr.Dataset(
+        {
+            "NBR": (["pixel_id", "year"], data.drop(columns="pixel_id").values)
+        },
+        coords={
+            "pixel_id": pixel_ids,
+            "time": years
+        }
+    )
 
-# Tính toán thời gian chạy
-execution_time = end_time - start_time
-print(f"Thời gian chạy của detector.run(): {execution_time:.4f} giây")
+    return ds
+
+params = {
+    "n_segments": 6,
+    "spike_threshold": 0.7,
+    "vertex_count_overshoot": 4,
+    "recovery_threshold": 0.25,
+    "preventOneYearRecovery": True,
+    "minObservation": 6
+}
+
+if __name__ == '__main__':
+    all_data = import_data('pivot_data.csv')
+    s = time.time()
+    run_parallel_with_client(params, all_data)
+    e = time.time()
+    print("thoigian ", e-s)
