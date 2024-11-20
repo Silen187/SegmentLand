@@ -6,13 +6,14 @@ import matplotlib.pyplot as plt
 import math
 import pandas as pd
 import xarray as xr
-from openpyxl import load_workbook
+from scipy.signal import savgol_filter
 from dask import delayed
 from dask import compute
 from dask.distributed import Client
-
-
-
+"""Kalman Filter: Phù hợp với dữ liệu NDVI có nhiễu ngẫu nhiên cao hoặc chuỗi dài hạn có sự thay đổi từ từ, ví dụ khi cần phát hiện xu hướng dài hạn mà không bị ảnh hưởng quá nhiều bởi nhiễu.
+Savitzky-Golay Filter: Tốt nhất khi bạn muốn giữ lại các biến động chu kỳ mà không làm biến dạng dữ liệu, đặc biệt hữu ích khi bạn muốn theo dõi các thay đổi theo mùa trong NDVI.
+=> Khu vực có người: Savgol, khu vực rừng: Kalman
+"""
 
 np.random.seed(42)
 
@@ -24,11 +25,11 @@ class ChangeDetection:
         """
         # Nhập các tham số từ người dùng, với giá trị mặc định
         self.n_segments = params["n_segments"]
-        self.spike_threshold = params["spike_threshold"]
+        # self.spike_threshold = params["spike_threshold"]
         self.vertex_count_overshoot = params["vertex_count_overshoot"]
         self.recovery_threshold = params["recovery_threshold"]
-        self.preventOneYearRecovery = params["preventOneYearRecovery"]
         self.minObservation = params["minObservation"]
+        self.human_affected = params["human_affected"]
 
         self.data = data
         self.min_year = min_year
@@ -87,14 +88,14 @@ class ChangeDetection:
         """
         Làm mịn dữ liệu để loại bỏ nhiễu bằng cách lấy trung bình của các điểm liền kề khi phát hiện nhiễu.
         """
-        nbr_values = self.data
-        smoothed_values = nbr_values.copy()
-        for i in range(1, len(nbr_values) - 1):
-            if nbr_values[i] != 0:
-                spike_ratio_before = abs(nbr_values[i] - nbr_values[i-1]) / abs(nbr_values[i-1])
-                spike_ratio_after = abs(nbr_values[i+1] - nbr_values[i]) / abs(nbr_values[i+1])
-                if spike_ratio_before >= self.spike_threshold and spike_ratio_after >= self.spike_threshold:
-                    smoothed_values[i] = (nbr_values[i-1] + nbr_values[i+1]) / 2
+        ndvi_values = self.data
+        smoothed_values = savgol_filter(ndvi_values, window_length=7, polyorder=5)
+        # for i in range(1, len(ndvi_values) - 1):
+        #     if ndvi_values[i] != 0:
+        #         spike_ratio_before = abs(ndvi_values[i] - ndvi_values[i-1]) / abs(ndvi_values[i-1])
+        #         spike_ratio_after = abs(ndvi_values[i+1] - ndvi_values[i]) / abs(ndvi_values[i+1])
+        #         if spike_ratio_before >= self.spike_threshold and spike_ratio_after >= self.spike_threshold:
+        #             smoothed_values[i] = (ndvi_values[i-1] + ndvi_values[i+1]) / 2
         self.smoothed_data = smoothed_values
 
     def segment_with_overshoot(self):
@@ -113,7 +114,7 @@ class ChangeDetection:
         self.slopes = my_pwlf.slopes
         self.pwlf_model = my_pwlf
 
-    def dynamic_thresholds(self, slopes, nbr_values, nbr_percentile):
+    def dynamic_thresholds(self, slopes, ndvi_values, ndvi_percentile):
         """
         Tính toán các ngưỡng động dựa trên độ dốc và sự thay đổi NBR.
         """
@@ -122,29 +123,30 @@ class ChangeDetection:
             theta = self.calculate_angle_between_slopes(slopes[i], slopes[i+1])
             result[i] = {'slope': slopes[i], 'slope_next': slopes[i+1], 'theta': theta}
         
-        nbr_diff = np.abs(np.diff(nbr_values))
-        nbr_threshold = np.percentile(nbr_diff, nbr_percentile)
+        ndvi_diff = np.abs(np.diff(ndvi_values))
+        ndvi_threshold = np.percentile(ndvi_diff, ndvi_percentile)
         
-        return result, nbr_threshold
+        return result, ndvi_threshold
     
-    def filter_breakpoints_dynamic(self, breakpoints, slopes, nbr_values):
+    def filter_breakpoints_dynamic(self, breakpoints, slopes, ndvi_values):
         """
         Lọc các điểm phân đoạn dựa trên ngưỡng động.
         """
-        nbr_percentile = max(20, 70 - 10 * self.n_segments * (np.std(nbr_values) / (0.5*(len(nbr_values)-1))))
-        
-        nbr_percentile = min(nbr_percentile, 60)
 
-        slope_threshold_result, nbr_threshold = self.dynamic_thresholds(slopes, nbr_values, nbr_percentile)
+        # Tính ndvi_percentile
+        ndvi_percentile = (50 / (1 + 0.1 * (len(ndvi_values)-1) * np.std(ndvi_values))) * (1 + (self.n_segments ** 1.2))
+        ndvi_percentile = min(ndvi_percentile, 50)  # Giới hạn trên
+
+        slope_threshold_result, ndvi_threshold = self.dynamic_thresholds(slopes, ndvi_values, ndvi_percentile)
         
         filtered_breakpoints = [breakpoints[0]]  # Giữ lại điểm đầu tiên
         
         for i in range(1, len(breakpoints) - 1):
-            delta_nbr_after = abs(nbr_values[breakpoints[i]+1] - self.pwlf_model.predict([breakpoints[i]])[0])
-            delta_nbr_before = abs(nbr_values[breakpoints[i]-1] - self.pwlf_model.predict([breakpoints[i]])[0])
+            delta_nbr_after = abs(ndvi_values[breakpoints[i]+1] - self.pwlf_model.predict([breakpoints[i]])[0])
+            delta_nbr_before = abs(ndvi_values[breakpoints[i]-1] - self.pwlf_model.predict([breakpoints[i]])[0])
             
             # Kiểm tra các điều kiện dựa trên ngưỡng động
-            if (delta_nbr_after > nbr_threshold or delta_nbr_before > nbr_threshold) and \
+            if (delta_nbr_after > ndvi_threshold or delta_nbr_before > ndvi_threshold) and \
                (((slope_threshold_result[i-1]['slope'] * slope_threshold_result[i-1]['slope_next']) < 0) or \
                 ((slope_threshold_result[i-1]['slope'] * slope_threshold_result[i-1]['slope_next']) >= 0 and \
                  slope_threshold_result[i-1]['theta'] >= 30)):
@@ -155,7 +157,7 @@ class ChangeDetection:
         
         self.breakpoints = filtered_breakpoints
 
-    def remove_breakpoint_with_max_variance(self, time_numeric, nbr_values, max_segments):
+    def remove_breakpoint_with_max_variance(self, time_numeric, ndvi_values, max_segments):
         """
         Loại bỏ đỉnh gây ra sự gia tăng phương sai lớn nhất bằng cách sử dụng pwlf.
         """
@@ -169,7 +171,7 @@ class ChangeDetection:
                 temp_breakpoints = self.breakpoints[:i] + self.breakpoints[i+1:]
                 
                 # Sử dụng pwlf để thực hiện hồi quy phân đoạn với breakpoints tạm thời
-                my_pwlf = pwlf.PiecewiseLinFit(time_numeric, nbr_values)
+                my_pwlf = pwlf.PiecewiseLinFit(time_numeric, ndvi_values)
                 my_pwlf.fit_with_breaks(temp_breakpoints)
                 
                 temp_pwlf.append(my_pwlf)
@@ -177,7 +179,7 @@ class ChangeDetection:
                 y_pred = my_pwlf.predict(time_numeric)
 
                 # Tính phương sai giữa giá trị thực và giá trị dự đoán
-                total_variance = self.calculate_variance(nbr_values, y_pred)
+                total_variance = self.calculate_variance(ndvi_values, y_pred)
                 
                 # Lưu lại phương sai khi loại đỉnh thứ i
                 variances.append(total_variance)
@@ -204,7 +206,7 @@ class ChangeDetection:
                              (self.pwlf_model.predict(self.breakpoints[i - 1]) - self.pwlf_model.predict(self.breakpoints[i]))
             
             # Phát hiện phục hồi ngắn hạn
-            if (self.slopes[i - 1] < 0 and self.slopes[i] > 0) and (0.9 <= recovery_speed <= 1.2) and duration <= 1:
+            if (self.slopes[i - 1] < 0 and self.slopes[i] > 0) and (0.8 <= recovery_speed <= 1.2) and duration <= 1:
                 continue  # Bỏ qua điểm phục hồi ngắn hạn này
             
             filtered_breakpoints.append(self.breakpoints[i])
@@ -266,7 +268,7 @@ class ChangeDetection:
         
         plt.title(f"Final Piecewise Linear Regression with Filtered Breakpoints For Pixel {pixel_id}")
         plt.xlabel('Time')
-        plt.ylabel('NBR')
+        plt.ylabel('NDVI')
         plt.legend()
         plt.grid(True)
         plt.savefig(f"pixel_{pixel_id}.png")
@@ -352,10 +354,10 @@ def process_pixel_dask(pixel_id, params, data, min_year):
     detector.filter_breakpoints_dynamic(detector.breakpoints, detector.slopes, detector.smoothed_data_normalized)
     detector.remove_breakpoint_with_max_variance(np.arange(len(detector.smoothed_data_normalized)), detector.smoothed_data_normalized, detector.n_segments)
     
-    if detector.preventOneYearRecovery:
+    if detector.human_affected == False:
         detector.detect_and_remove_short_term_recovery()
-    
-    detector.detect_and_remove_small_recoveries()
+        detector.detect_and_remove_small_recoveries()
+
     detector.final_model()
     detector.get_segment_data(pixel_id)
     detector.plot_result(pixel_id)
@@ -366,12 +368,11 @@ def run_parallel_with_client(params, all_data, min_year):
     client = Client(n_workers=8, threads_per_worker=2, memory_limit='2GB')
 
     # Tạo danh sách các tác vụ delayed cho tất cả các pixel
-    tasks = [process_pixel_dask(pixel_id.item(), params, all_data.NBR.sel(pixel_id=pixel_id).values, min_year) for pixel_id in all_data.pixel_id]
+    tasks = [process_pixel_dask(pixel_id.item(), params, all_data.NDVI.sel(pixel_id=pixel_id).values, min_year) for pixel_id in all_data.pixel_id]
     print(len(tasks))
     
     # Chạy song song và theo dõi tiến trình
     compute(*tasks)  # Dask sẽ tự động phân phối công việc cho các lõi CPU
-
     client.close()  # Đóng client khi xong
     print("Thành công!")
 
@@ -384,7 +385,7 @@ def import_data(file_path):
 
     ds = xr.Dataset(
         {
-            "NBR": (["pixel_id", "year"], data.drop(columns="pixel_id").values)
+            "NDVI": (["pixel_id", "year"], data.drop(columns="pixel_id").values)
         },
         coords={
             "pixel_id": pixel_ids,
@@ -395,12 +396,12 @@ def import_data(file_path):
     return ds, min(years)
 
 params = {
-    "n_segments": 6,
-    "spike_threshold": 0.7,
-    "vertex_count_overshoot": 4,
+    "n_segments": 7,
+    # "spike_threshold": 0.7,
+    "vertex_count_overshoot": 3,
     "recovery_threshold": 0.25,
-    "preventOneYearRecovery": True,
-    "minObservation": 6
+    "minObservation": 7,
+    "human_affected": True
 }
 
 if __name__ == '__main__':
