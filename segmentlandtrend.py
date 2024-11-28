@@ -8,8 +8,9 @@ import pandas as pd
 import xarray as xr
 from scipy.signal import savgol_filter
 from dask import delayed
-from dask import compute
-from dask.distributed import Client
+from dask.distributed import Client, LocalCluster
+
+
 """Kalman Filter: Phù hợp với dữ liệu NDVI có nhiễu ngẫu nhiên cao hoặc chuỗi dài hạn có sự thay đổi từ từ, ví dụ khi cần phát hiện xu hướng dài hạn mà không bị ảnh hưởng quá nhiều bởi nhiễu.
 Savitzky-Golay Filter: Tốt nhất khi bạn muốn giữ lại các biến động chu kỳ mà không làm biến dạng dữ liệu, đặc biệt hữu ích khi bạn muốn theo dõi các thay đổi theo mùa trong NDVI.
 => Khu vực có người: Savgol, khu vực rừng: Kalman
@@ -89,6 +90,7 @@ class ChangeDetection:
         Làm mịn dữ liệu để loại bỏ nhiễu bằng cách lấy trung bình của các điểm liền kề khi phát hiện nhiễu.
         """
         ndvi_values = self.data
+        # smoothed_values = ndvi_values.copy()
         smoothed_values = savgol_filter(ndvi_values, window_length=7, polyorder=5)
         # for i in range(1, len(ndvi_values) - 1):
         #     if ndvi_values[i] != 0:
@@ -364,15 +366,30 @@ def process_pixel_dask(pixel_id, params, data, min_year):
 
 
 def run_parallel_with_client(params, all_data, min_year):
-    # Khởi tạo Dask Client
-    client = Client(n_workers=8, threads_per_worker=2, memory_limit='2GB')
+    # Tạo LocalCluster
+    cluster = LocalCluster(n_workers=8, threads_per_worker=1, memory_limit='1GB')
+
+    # Kết nối Client tới cluster
+    client = Client(cluster)
+
+    # Kiểm tra trạng thái của cluster
+    print(client)
+    print("Link dashboard: ", cluster.dashboard_link)
+
+
+    print("\nDanh sách các nút trong cluster:")
+    # Truy cập thông tin scheduler
+    print(f"Scheduler: {cluster.scheduler_info['address']}")  # Truy cập trực tiếp vào 'address'
+    print("Danh sách Worker: ")
+    for worker in cluster.workers.values():
+        print(f"Worker ID: {worker.id}, Address: {worker.address}")
+
 
     # Tạo danh sách các tác vụ delayed cho tất cả các pixel
     tasks = [process_pixel_dask(pixel_id.item(), params, all_data.NDVI.sel(pixel_id=pixel_id).values, min_year) for pixel_id in all_data.pixel_id]
-    print(len(tasks))
     
     # Chạy song song và theo dõi tiến trình
-    compute(*tasks)  # Dask sẽ tự động phân phối công việc cho các lõi CPU
+    client.compute(tasks, sync=True)
     client.close()  # Đóng client khi xong
     print("Thành công!")
 
