@@ -1,14 +1,19 @@
 import numpy as np
+import os
+import folium
+import time
 import pwlf
 import matplotlib
-matplotlib.use('Agg') 
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
+matplotlib.use('Agg') 
 import math
 import pandas as pd
 import xarray as xr
 from scipy.signal import savgol_filter
 from dask import delayed
 from dask.distributed import Client, LocalCluster
+
 
 
 """Kalman Filter: Phù hợp với dữ liệu NDVI có nhiễu ngẫu nhiên cao hoặc chuỗi dài hạn có sự thay đổi từ từ, ví dụ khi cần phát hiện xu hướng dài hạn mà không bị ảnh hưởng quá nhiều bởi nhiễu.
@@ -18,6 +23,93 @@ Savitzky-Golay Filter: Tốt nhất khi bạn muốn giữ lại các biến đ�
 
 np.random.seed(42)
 
+
+class PixelMapGenerator:
+    def __init__(self, all_flag):
+        """
+        Khởi tạo lớp với dữ liệu all_flag.
+        """
+        self.all_flag = all_flag
+
+    @staticmethod
+    def calculate_pixel_coords(lat, lon, size=30):
+        """
+        Tính tọa độ góc pixel chứa một điểm.
+        """
+        delta_lat = size / 111000  # Δvĩ độ (30m)
+        delta_lon = size / (111000 * np.cos(np.radians(lat)))  # Δkinh độ (30m)
+        # Tính tọa độ các góc của pixel
+        return [
+            [lat - delta_lat / 2, lon - delta_lon / 2],  # Bottom-left
+            [lat - delta_lat / 2, lon + delta_lon / 2],  # Bottom-right
+            [lat + delta_lat / 2, lon + delta_lon / 2],  # Top-right
+            [lat + delta_lat / 2, lon - delta_lon / 2],  # Top-left
+            [lat - delta_lat / 2, lon - delta_lon / 2],  # Close polygon
+        ]
+
+    def generate_map(self, file_name="fill_map_color.html"):
+        """
+        Tạo bản đồ từ dữ liệu all_flag và lưu vào file HTML.
+        """
+        # Tính trung tâm bản đồ
+        map_center = [
+            np.mean([pixel["latitude"] for pixel in self.all_flag.values()]),
+            np.mean([pixel["longitude"] for pixel in self.all_flag.values()])
+        ]
+        m = folium.Map(location=map_center, zoom_start=15)
+
+        # Thêm lớp bản đồ vệ tinh Google
+        folium.TileLayer(
+            tiles="https://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
+            attr="Google Satellite",
+            name="Satellite",
+            subdomains=['mt0', 'mt1', 'mt2', 'mt3'],
+            max_zoom=20,
+        ).add_to(m)
+
+        # Tạo LayerGroup để chứa các lớp tô màu
+        fill_layer = folium.FeatureGroup(name="Fill Layer")
+
+        # Chuẩn hóa màu và ánh xạ
+        norm = mcolors.Normalize(vmin=-1, vmax=1)
+        cmap = mcolors.LinearSegmentedColormap.from_list("", ["darkred", "red", "white", "green", "darkgreen"])
+
+        # Duyệt qua các pixel trong all_flag
+        for pixel_id, pixel_data in self.all_flag.items():
+            lat = pixel_data["latitude"]
+            lon = pixel_data["longitude"]
+            slope = pixel_data["slope"]
+            change_year = pixel_data["change_year"]
+
+            # Ánh xạ giá trị slope sang màu
+            color = mcolors.to_hex(cmap(norm(slope)))
+
+            # Tính tọa độ pixel chứa điểm
+            pixel_coords = self.calculate_pixel_coords(lat, lon)
+
+            # Vẽ pixel vào LayerGroup
+            folium.Polygon(
+                locations=pixel_coords,
+                color="transparent",  # Không vẽ viền
+                fill=True,
+                fill_color=color,  # Màu tô
+                fill_opacity=0.8,
+                tooltip=f"Pixel ID: {pixel_id}<br>Year: {change_year}<br>Slope: {slope:.2f}<br>Longitude: {lon}<br>Latitude: {lat}"
+            ).add_to(fill_layer)
+
+        # Thêm LayerGroup vào bản đồ
+        fill_layer.add_to(m)
+
+        # Thêm điều khiển layer để bật/tắt lớp
+        folium.LayerControl(collapsed=False).add_to(m)
+
+        # Lưu và hiển thị bản đồ
+        m.save(file_name)
+        print(f"Lưu bản đồ vào {file_name}")
+
+
+
+
 class ChangeDetection:
 
     def __init__(self, params, data, min_year):
@@ -26,7 +118,6 @@ class ChangeDetection:
         """
         # Nhập các tham số từ người dùng, với giá trị mặc định
         self.n_segments = params["n_segments"]
-        # self.spike_threshold = params["spike_threshold"]
         self.vertex_count_overshoot = params["vertex_count_overshoot"]
         self.recovery_threshold = params["recovery_threshold"]
         self.minObservation = params["minObservation"]
@@ -98,6 +189,7 @@ class ChangeDetection:
         #         spike_ratio_after = abs(ndvi_values[i+1] - ndvi_values[i]) / abs(ndvi_values[i+1])
         #         if spike_ratio_before >= self.spike_threshold and spike_ratio_after >= self.spike_threshold:
         #             smoothed_values[i] = (ndvi_values[i-1] + ndvi_values[i+1]) / 2
+        # self.smoothed_data = smoothed_values
         self.smoothed_data = smoothed_values
 
     def segment_with_overshoot(self):
@@ -110,7 +202,7 @@ class ChangeDetection:
         # Thực hiện hồi quy phân đoạn với dữ liệu đã chuẩn hóa
         time_numeric = np.arange(len(self.smoothed_data_normalized))
         my_pwlf = pwlf.PiecewiseLinFit(time_numeric, self.smoothed_data_normalized)
-        breakpoints = my_pwlf.fit(self.n_segments + self.vertex_count_overshoot)
+        breakpoints = my_pwlf.fitfast(self.n_segments + self.vertex_count_overshoot)
         self.breakpoints = self.adjust_duplicates(breakpoints)
         my_pwlf.fit_with_breaks(self.breakpoints)
         self.slopes = my_pwlf.slopes
@@ -136,7 +228,7 @@ class ChangeDetection:
         """
 
         # Tính ndvi_percentile
-        ndvi_percentile = (50 / (1 + 0.1 * (len(ndvi_values)-1) * np.std(ndvi_values))) * (1 + (self.n_segments ** 1.2))
+        ndvi_percentile = (50 / (1 + 0.1 * (len(ndvi_values)-1) * np.std(ndvi_values))) * (1 + (self.n_segments ** 2))
         ndvi_percentile = min(ndvi_percentile, 50)  # Giới hạn trên
 
         slope_threshold_result, ndvi_threshold = self.dynamic_thresholds(slopes, ndvi_values, ndvi_percentile)
@@ -208,7 +300,7 @@ class ChangeDetection:
                              (self.pwlf_model.predict(self.breakpoints[i - 1]) - self.pwlf_model.predict(self.breakpoints[i]))
             
             # Phát hiện phục hồi ngắn hạn
-            if (self.slopes[i - 1] < 0 and self.slopes[i] > 0) and (0.8 <= recovery_speed <= 1.2) and duration <= 1:
+            if (self.slopes[i - 1] < 0 and self.slopes[i] > 0) and (0.6 <= recovery_speed <= 1.4) and duration <= 1:
                 continue  # Bỏ qua điểm phục hồi ngắn hạn này
             
             filtered_breakpoints.append(self.breakpoints[i])
@@ -250,6 +342,7 @@ class ChangeDetection:
         my_pwlf = pwlf.PiecewiseLinFit(time_numeric, self.smoothed_data)
         my_pwlf.fit_with_breaks(self.breakpoints)
         self.pwlf_model = my_pwlf
+        self.slopes = my_pwlf.slopes
 
     def plot_result(self, pixel_id):
         """
@@ -257,94 +350,36 @@ class ChangeDetection:
         """
         time_numeric = np.arange(len(self.smoothed_data))
         plt.figure(figsize=(12, 6))
-        plt.plot(time_numeric, self.smoothed_data, 'o', label='Smoothed Data')
-        plt.plot(time_numeric, self.data, 'v', label='Origin Data')
+        plt.plot(time_numeric + self.min_year, self.smoothed_data, 'o-', label='Smoothed Data')
+        plt.plot(time_numeric + self.min_year, self.data, 'v-', label='Origin Data')
+        y_pred = self.pwlf_model.predict(time_numeric)
+        rmse = np.sqrt(self.calculate_variance(self.smoothed_data, y_pred))
+        plt.plot([], [], ' ', label=f'RMSE: {rmse:.4f}')
                 
         for i in range(1, len(self.breakpoints)):
             x_segment = np.linspace(self.breakpoints[i-1], self.breakpoints[i], num=100)
             y_segment = self.pwlf_model.predict(x_segment)
-            plt.plot(x_segment, y_segment, '-', color='red')
+            plt.plot(x_segment + self.min_year, y_segment, '-', color='red', linewidth = 3)
         
         for bp in self.breakpoints:
-            plt.axvline(x=bp, linestyle='--', color='green', label=f'Breakpoint at {bp:.2f}')
+            plt.axvline(x=bp + self.min_year, linestyle='--', color='green', label=f'Breakpoint at {(bp + self.min_year):.2f}')
         
         plt.title(f"Final Piecewise Linear Regression with Filtered Breakpoints For Pixel {pixel_id}")
         plt.xlabel('Time')
         plt.ylabel('NDVI')
+        plt.ylim(-1, 1)
         plt.legend()
         plt.grid(True)
-        plt.savefig(f"pixel_{pixel_id}.png")
+        output_dir = "image"
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Lưu hình ảnh vào thư mục "image"
+        plt.savefig(os.path.join(output_dir, f"pixel_{pixel_id}.png"))
         plt.close()  # Đóng biểu đồ để giải phóng bộ nhớ
 
 
-    def get_segment_data(self, pixel_id, delta='all', filename="all_pixels_segments.xlsx"):
-        """
-        Tạo mảng thông tin về các phân đoạn dựa trên các điểm breakpoint, giữ nguyên hướng delta.
-        
-        Parameters:
-        - delta (String): 'all', 'loss', hoặc 'gain' để chọn loại phân đoạn.
-        
-        Returns:
-        - Một mảng 2D với 11 hàng, mỗi cột đại diện cho một phân đoạn.
-        """
-        segments_info = []
-
-        for i in range(len(self.breakpoints) - 1):
-            start = self.breakpoints[i]
-            end = self.breakpoints[i + 1]
-            start_value_predict = self.pwlf_model.predict([start])[0]
-            end_value_predict = self.pwlf_model.predict([end])[0]
-            delta_value_predict = end_value_predict - start_value_predict
-            start_value = self.smoothed_data[self.breakpoints[i]]
-            end_value = self.smoothed_data[self.breakpoints[i+1]]
-            duration = end - start
-            rate_of_change_predict = delta_value_predict / duration 
-            
-            # Lọc các phân đoạn dựa trên loại delta ('all', 'loss', 'gain')
-            if (delta == 'all') or (delta == 'loss' and delta_value_predict < 0) or (delta == 'gain' and delta_value_predict > 0):
-                segments_info.append([
-                    start + self.min_year,               # Hàng 1: Năm bắt đầu
-                    end + self.min_year,                 # Hàng 2: Năm kết thúc
-                    start_value_predict,         # Hàng 3: Giá trị bắt đầu
-                    end_value_predict,           # Hàng 4: Giá trị kết thúc
-                    delta_value_predict,        #Giá trị thay đổi quang phổ dự đoán
-                    start_value,            #Giá trị làm trơn thực bắt đầu
-                    end_value,              #Giá trị làm trơn kết thúc
-                    duration,            # Hàng 6: Thời lượng thay đổi
-                    rate_of_change_predict,     # Hàng 7: Tốc độ thay đổi quang phổ dự đoán
-                    delta_value_predict / self.calculate_rmse()  # Hàng 8: DSNR (chuẩn hóa theo RMSE)
-                ])
-
-        columns = [
-            'Năm Bắt Đầu', 'Năm Kết Thúc', 'Giá Trị Dự Đoán Bắt Đầu', 'Giá Trị Dự Đoán Kết Thúc', 'Sự Thay Đổi Quang Phổ Dự Đoán',
-            'Giá Trị Thực Bắt Đầu', 'Giá Trị Thực Kết Thúc',
-            'Thời Lượng', 'Tốc Độ Thay Đổi Dự Đoán', 'DSNR'
-        ]
-
-        df = pd.DataFrame(segments_info, columns=columns).T
-
-        start_row = pixel_id * 11  # Mỗi pixel chiếm 11 hàng và cách nhau 1 hàng
-        
-        try:
-            with pd.ExcelWriter(filename, engine='openpyxl', mode='a', if_sheet_exists='overlay') as writer:
-                # Ghi nhãn pixel_id tại hàng bắt đầu
-                sheet = writer.book['Sheet1']
-                sheet.cell(row=start_row + 1, column=1, value=f"Pixel ID: {pixel_id}")
-                
-                # Ghi dữ liệu của DataFrame từ hàng tiếp theo
-                df.to_excel(writer, sheet_name="Sheet1", startrow=start_row, startcol=1, index=True, header=False)
-        
-        except FileNotFoundError:
-            # Nếu file chưa tồn tại, tạo file mới
-            with pd.ExcelWriter(filename, engine='openpyxl') as writer:
-                # Ghi nhãn pixel_id và dữ liệu vào file Excel
-                sheet = writer.sheets.get("Sheet1", writer.book.create_sheet("Sheet1"))
-                sheet.cell(row=start_row + 1, column=1, value=f"Pixel ID: {pixel_id}")
-                df.to_excel(writer, sheet_name="Sheet1", startrow=start_row, startcol=1, index=True, header=False)
-
-
 @delayed
-def process_pixel_dask(pixel_id, params, data, min_year):
+def process_pixel_dask(pixel_id, params, data, min_year, longtitude, latitude):
     # Khởi tạo một đối tượng ChangeDetection mới cho mỗi pixel
     detector = ChangeDetection(params, data, min_year)
     # Kiểm tra nếu dữ liệu không đủ số lượng quan sát
@@ -361,13 +396,19 @@ def process_pixel_dask(pixel_id, params, data, min_year):
         detector.detect_and_remove_small_recoveries()
 
     detector.final_model()
-    detector.get_segment_data(pixel_id)
     detector.plot_result(pixel_id)
+    return {
+        "pixel_id": pixel_id,
+        "slope": detector.slopes[-1],
+        "longitude": longtitude,
+        "latitude": latitude,
+        "change_year": detector.breakpoints[-2] + detector.min_year
+    }
 
 
 def run_parallel_with_client(params, all_data, min_year):
     # Tạo LocalCluster
-    cluster = LocalCluster(n_workers=8, threads_per_worker=1, memory_limit='1GB')
+    cluster = LocalCluster(n_workers=6, threads_per_worker=2, memory_limit='2GB')
 
     # Kết nối Client tới cluster
     client = Client(cluster)
@@ -386,41 +427,69 @@ def run_parallel_with_client(params, all_data, min_year):
 
 
     # Tạo danh sách các tác vụ delayed cho tất cả các pixel
-    tasks = [process_pixel_dask(pixel_id.item(), params, all_data.NDVI.sel(pixel_id=pixel_id).values, min_year) for pixel_id in all_data.pixel_id]
-    
+    tasks = [
+        process_pixel_dask(
+            pixel_id.item(),
+            params,
+            all_data.NDVI.sel(pixel_id=pixel_id).values,
+            min_year,
+            all_data.longitude.sel(pixel_id=pixel_id).item(),
+            all_data.latitude.sel(pixel_id=pixel_id).item()
+        )
+        for pixel_id in all_data.pixel_id
+    ]
+
     # Chạy song song và theo dõi tiến trình
-    client.compute(tasks, sync=True)
+    start_time = time.time()
+    futures = client.compute(tasks)
+    results = [future.result() for future in futures]
+    all_flag = {result["pixel_id"]: result for result in results}
+    end_time = time.time()
     client.close()  # Đóng client khi xong
+
     print("Thành công!")
+    print(f"Thời gian chạy: {end_time - start_time:.2f} giây")
+
+    return all_flag
 
 def import_data(file_path):
-
     # Đọc tệp CSV vào DataFrame
-    data = pd.read_csv(file_path)  
+    data = pd.read_csv(file_path) 
+    data.replace(["", "NA", "null", "-"], np.nan, inplace=True)
+    
+    # Trích xuất danh sách năm, pixel_id và tọa độ
     years = [int(col.split('_')[1]) for col in data.columns if col.startswith("Year_")]
     pixel_ids = data['pixel_id']
-
+    
+    # Tạo xarray.Dataset và thêm longitude, latitude vào như là tọa độ
     ds = xr.Dataset(
         {
-            "NDVI": (["pixel_id", "year"], data.drop(columns="pixel_id").values)
+            "NDVI": (["pixel_id", "time"], data.drop(columns=["pixel_id", "longitude", "latitude", "index"]).values)
         },
         coords={
             "pixel_id": pixel_ids,
-            "time": years
+            "time": years,
+            "longitude": ("pixel_id", data["longitude"].values),  # Thêm tọa độ longitude
+            "latitude": ("pixel_id", data["latitude"].values)    # Thêm tọa độ latitude
         }
     )
 
-    return ds, min(years)
+    # Điền giá trị NaN
+    ds_filled = ds.interpolate_na(dim="time", method="linear")
+
+    return ds_filled, min(years)
 
 params = {
-    "n_segments": 7,
+    "n_segments": 4,
     # "spike_threshold": 0.7,
     "vertex_count_overshoot": 3,
     "recovery_threshold": 0.25,
-    "minObservation": 7,
-    "human_affected": True
+    "minObservation": 6,
+    "human_affected": False
 }
 
 if __name__ == '__main__':
     all_data, min_year = import_data('pivot_data.csv')
-    run_parallel_with_client(params, all_data, min_year)
+    all_flag = run_parallel_with_client(params, all_data, min_year)
+    map = PixelMapGenerator(all_flag)
+    map.generate_map()
